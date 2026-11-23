@@ -336,7 +336,7 @@ async function openScan(id) {
     <p><small>Files save to your Downloads folder under their real names (frame_0001.heic …); open them with Preview.</small></p>
     ${o.scan.status === "complete" ? `<h4>Copy / move this scan</h4><div class="row"><select id="cpPrac"></select><select id="cpFold"></select>
       <label><input type="checkbox" id="cpMove"> Move (the original is deleted; 30 days to undo)</label><button id="cpGo">Copy</button></div>
-      <p><small>Into another practice: always a new folder there, with no patient link. Inside this practice: pick a folder, or a new one. The copy arrives on the surgeon's iPad like a team scan ("PHAI support"). Photos, cover and 3D models are copied; work files, dots and plans are not.</small></p>` : ""}</div>`;
+      <p><small>Into another practice: always a new folder there, with no patient link. Inside this practice: pick a folder, or a new one. The copy arrives on the surgeon's iPad like a team scan ("PHAI support"). Every file is copied (photos, their side files, cover, 3D models) except the iPad's own work files (dots, plans).</small></p>` : ""}</div>`;
   if (o.scan.status === "complete") copyMoveSetup(id, o.scan.practice_id).catch(e => note(e.message));
   $("zipScan").onclick = () => downloadScan(id).catch(e => { $("zipState").textContent = "Stopped: " + e.message; note(e.message); });
 }
@@ -418,7 +418,7 @@ async function downloadScan(id) {
 // ADMIN2a: scans that never reached the surgeon, across practices. Re-deliver (a complete scan: its "new scan" notification goes
 // out again) and Give up (an upload that never finished). Every action asks first and is written to the action log.
 async function stuck(hours) {
-  hours = Number(hours ?? ($("stuckHours")?.value || 24));
+  hours = Number(hours ?? ($("stuckHours")?.value || 2));   // default 2 h (23 Nov: a 6 h-old scan hid under 24)
   const rows = await rpc("admin_stuck_scans", { p_hours: hours });
   const src = s => ({ patient_iphone: "patient's iPhone", team_iphone: "team phone" + (s.scanned_by_name ? " (" + s.scanned_by_name + ")" : ""), clinic: "clinic" })[s.source] || s.source;
   $("app").innerHTML = `<div class="card"><h3>Stuck scans</h3>
