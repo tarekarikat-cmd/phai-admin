@@ -218,12 +218,14 @@ async function practices() {
     ${ps.map(p => `<tr><td>${esc(p.name)}${p.delete_after ? " <small>(closing)</small>" : ""}</td><td>${esc(p.surgeon_count)}</td><td>${esc(p.scan_count)}</td>
       <td>${bytes(p.storage_used_bytes)} of ${bytes(p.storage_limit_bytes)} <button data-a="limit" data-id="${p.practice_id}">Set limit</button></td>
       <td><button data-a="tc" data-id="${p.practice_id}" data-v="${!p.training_consent}">${p.training_consent ? "On · switch off" : "Off · switch on"}</button></td>
-      <td><button data-a="open" data-id="${p.practice_id}" data-name="${esc(p.name)}">Folders</button></td></tr>`).join("")}</table></div><div id="drill"></div>`;
+      <td class="row"><button data-a="open" data-id="${p.practice_id}" data-name="${esc(p.name)}">Folders</button>
+        <button data-a="logs" data-id="${p.practice_id}" data-name="${esc(p.name)}">Support logs</button></td></tr>`).join("")}</table></div><div id="drill"></div>`;
   $("app").querySelectorAll("button[data-a]").forEach(b => b.onclick = async () => {
     try {
       if (b.dataset.a === "limit") { const gb = prompt("New storage limit in GB:"); if (!gb) return; await rpc("admin_set_storage_limit", { p_practice: b.dataset.id, p_bytes: Math.round(Number(gb) * 1073741824) }); return practices(); }
       if (b.dataset.a === "tc") { await rpc("admin_set_training_consent", { p_practice: b.dataset.id, p_on: b.dataset.v === "true" }); return practices(); }
       if (b.dataset.a === "open") return folders(b.dataset.id, b.dataset.name);
+      if (b.dataset.a === "logs") return supportLogs(b.dataset.id, b.dataset.name);
     } catch (e) { note(e.message); }
   });
 }
@@ -233,6 +235,31 @@ async function folders(practice, name) {
     ${fs.map(f => `<tr><td>${esc(f.patient_number)}</td><td>${esc(f.name)}${f.deleted_at ? " <small>(deleted)</small>" : ""}</td><td>${esc(f.scans)}</td><td>${when(f.created_at)}</td>
       <td><button data-f="${f.folder_id}" data-name="${esc(f.name)}">Scans</button></td></tr>`).join("")}</table></div><div id="drill2"></div>`;
   $("drill").querySelectorAll("button[data-f]").forEach(b => b.onclick = () => scans(b.dataset.f, b.dataset.name).catch(e => note(e.message)));
+}
+// Logs the app sent to support from this practice. Each opening is logged; a log deletes itself 30 days after it arrived.
+async function supportLogs(practice, name) {
+  const ls = await rpc("admin_list_support_logs", { p_practice: practice });
+  $("drill").innerHTML = `<div class="card"><h3>${esc(name)}: support logs</h3>
+    <p><small>Logs a surgeon sent from the app (already cleaned of patient names and codes). Each one deletes itself 30 days after it arrived. Save gives you the plain text file.</small></p>
+    ${ls.length ? `<table><tr><th>Arrived</th><th>From</th><th>App</th><th>Device</th><th>Note</th><th>Size</th><th>Deletes</th><th></th></tr>
+    ${ls.map(l => `<tr><td>${when(l.arrived_at)}</td><td>${esc(l.sender_name || "—")}${l.sender_username ? ` <small>(${esc(l.sender_username)})</small>` : ""}</td>
+      <td>build ${esc(l.app_build)}${l.app_version ? " · " + esc(l.app_version) : ""}</td><td>${esc(l.device_model)}${l.os ? `<br><small>${esc(l.os)}</small>` : ""}</td>
+      <td>${esc(l.note || "")}</td><td>${bytes(l.uncompressed_bytes)}</td><td>${when(l.deletes_after)}</td>
+      <td><button data-log="${l.log_id}" data-file="${esc(l.file_name)}">Save</button></td></tr>`).join("")}</table>` : "<p>No logs from this practice.</p>"}</div>`;
+  $("drill").querySelectorAll("button[data-log]").forEach(b => b.onclick = () => saveLog(b.dataset.log, b.dataset.file).catch(e => note("Not saved: " + e.message)));
+}
+// The server keeps each log compressed; the page unpacks it and saves it as plain text under its name.
+async function saveLog(id, fileName) {
+  const r = await edge("support-log", { action: "admin_link", log_id: id });   // logged: who, when, which log
+  const got = await fetch(r.url);
+  if (!got.ok || !got.body) throw new Error(String(got.status));
+  if (typeof DecompressionStream === "undefined") throw new Error("this browser can't unpack the log; use a current Safari, Chrome or Firefox");
+  const blob = await new Response(got.body.pipeThrough(new DecompressionStream("gzip"))).blob();
+  const url = URL.createObjectURL(new Blob([blob], { type: "text/plain;charset=utf-8" }));
+  const a = document.createElement("a"); a.href = url; a.download = fileName || r.file_name || "phai_log.txt";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  note("Saved " + (fileName || r.file_name) + " to your Downloads folder.", "ok");
 }
 async function scans(folder, name) {
   const ss = await rpc("admin_list_scans", { p_folder: folder });
@@ -256,7 +283,8 @@ async function settings() {
   const o = await rpc("admin_overview"); const s = o.settings;
   const plain = [["maintenance", "Maintenance mode (true/false)"], ["oldest_build", "Oldest app build allowed"], ["code_life_days", "Code life (days)"],
                  ["photo_days", "Photos leave after Enhance (days)"], ["photo_warning_days", "Warning for never-enhanced scans (day)"],
-                 ["unenhanced_photo_days", "Photos leave without Enhance (days)"], ["patient_daily_scan_cap", "Daily scans per patient"]];
+                 ["unenhanced_photo_days", "Photos leave without Enhance (days)"], ["patient_daily_scan_cap", "Daily scans per patient"],
+                 ["visit_change_days", "Days a moved or cancelled visit shows what changed (1 to 30)"]];
   const sw = [["device_photo_removal", "Phones and iPads may remove their photos (turn on only after the two-iPad restore has been proven)"], ["key_photos_for_training", "Keep key photos for training (not needed; leave off)"]];
   $("app").innerHTML = `<div class="card"><h3>Settings</h3><table>${plain.map(([k, l]) => `<tr><td>${esc(l)}</td><td><input id="s-${k}" value="${esc(JSON.stringify(s[k]))}" size="8"></td><td><button data-k="${k}">Save</button></td></tr>`).join("")}</table></div>
     <div class="card"><h3>Switches</h3><table>${sw.map(([k, l]) => `<tr><td>${esc(l)}</td><td><b>${s[k] ? "ON" : "OFF"}</b></td><td><button data-sw="${k}" data-v="${!s[k]}">${s[k] ? "Switch off" : "Switch on…"}</button></td></tr>`).join("")}</table>
