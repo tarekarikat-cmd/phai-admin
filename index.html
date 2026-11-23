@@ -274,10 +274,58 @@ async function openScan(id) {
   let links = {};
   if (up.length) { const r = await edge("admin-file-link", { file_ids: up.slice(0, 100).map(f => f.file_id) }); for (const l of r.links) links[l.file_id] = l.url; }
   $("drill3").innerHTML = `<div class="card"><h3>Scan</h3><p><small>Opened and logged. Links last 5 minutes.</small></p>
+    <p><button id="zipScan">Download whole scan</button> <small id="zipState">One .zip with every file the server holds for this scan (for a rebuild on the Mac). Chrome or Edge.</small></p>
     <p>Made ${when(o.scan.created_at)} · delivered ${when(o.scan.delivered_at)} · enhanced ${when(o.scan.enhanced_at)} · ${bytes(o.scan.total_bytes)} · ${esc(o.scan.capture_type)}</p>
     <table><tr><th>File</th><th>Kind</th><th>Size</th><th></th></tr>${o.files.map(f => `<tr><td>${esc(f.name)}</td><td>${esc(f.kind)}</td><td>${bytes(f.size_bytes)}</td>
       <td>${links[f.file_id] ? `<a href="${esc(withName(links[f.file_id], f.name))}" rel="noopener">${f.kind === "model" || f.kind === "enhanced_model" ? "Download the 3D model" : "Save"}</a>` : (f.uploaded ? "" : "<small>not on the server</small>")}</td></tr>`).join("")}</table>
-    <p><small>Files save to your Downloads folder under their real names (frame_0001.heic …); open them with Preview.</small></p></div>`;
+    <p><small>Files save to your Downloads folder under their real names (frame_0001.heic …); open them with Preview.</small></p></div>`;  $("zipScan").onclick = () => downloadScan(id).catch(e => { $("zipState").textContent = "Stopped: " + e.message; note(e.message); });
+}
+// SCANZIP1: the whole scan as ONE zip, written straight to disk while it downloads (Chrome/Edge "Save as"), so a large scan never
+// sits in memory. Each file is checked against its SHA-256 fingerprint; a README.txt in the zip lists every file and the result.
+async function downloadScan(id) {
+  if (typeof window.showSaveFilePicker !== "function") throw new Error("this needs Chrome or Edge on the Mac (it saves the zip straight to disk)");
+  const o = await rpc("admin_scan_download", { p_scan: id });   // logged once: who, when, which scan
+  const s = o.scan, files = o.files.filter(f => f.uploaded);
+  const day = (s.created_at || "").slice(0, 10);
+  const zipName = `phai_scan_${(s.practice || "practice").replace(/[^A-Za-z0-9]+/g, "_")}_${s.patient_number ?? "x"}_${day}.zip`;
+  const handle = await window.showSaveFilePicker({ suggestedName: zipName, types: [{ description: "Zip", accept: { "application/zip": [".zip"] } }] });
+  const out = await handle.createWritable();
+  const { makeZip } = await import("https://cdn.jsdelivr.net/npm/client-zip@2.4.5/index.js");
+  const state = t => { $("zipState").textContent = t; };
+  const used = new Set(); const nameFor = f => {
+    let n = (f.kind === "work" ? "work/" : "") + f.name.replace(/[\\/]/g, "_"), k = 2, base = n;
+    while (used.has(n)) { const dot = base.lastIndexOf("."); n = dot > 0 ? `${base.slice(0, dot)}_${k}${base.slice(dot)}` : `${base}_${k}`; k++; }
+    used.add(n); return n; };
+  const hex = b => Array.from(new Uint8Array(b), x => x.toString(16).padStart(2, "0")).join("");
+  const rows = []; let done = 0, sum = 0, bad = 0;
+  async function* entries() {
+    for (let i = 0; i < files.length; i += 20) {
+      const batch = files.slice(i, i + 20);
+      const r = await edge("admin-file-link", { file_ids: batch.map(f => f.file_id) });   // fresh 5-minute links per batch
+      const link = Object.fromEntries(r.links.map(l => [l.file_id, l.url]));
+      for (const f of batch) {
+        const got = link[f.file_id] ? await fetch(link[f.file_id]) : null;
+        if (!got || !got.ok) { rows.push(`MISSING  ${f.name}  (${f.kind})`); bad++; continue; }
+        const buf = await got.arrayBuffer();
+        const ok = hex(await crypto.subtle.digest("SHA-256", buf)) === f.fingerprint && buf.byteLength === Number(f.size_bytes);
+        if (!ok) bad++;
+        const n = nameFor(f); rows.push(`${ok ? "OK      " : "MISMATCH"}  ${n}  ${f.kind}  ${buf.byteLength} bytes  sha256 ${f.fingerprint}`);
+        done++; sum += buf.byteLength; state(`Downloading ${done} of ${files.length} files (${bytes(sum)})…`);
+        yield { name: n, input: new Uint8Array(buf), lastModified: new Date(s.created_at || Date.now()) };
+      }
+    }
+    const photos = files.filter(f => f.kind === "photo").length;
+    const readme = [`PHAI scan, downloaded from the control page (${SYSTEM.label}) on ${new Date().toISOString()}.`,
+      `Practice: ${s.practice} · folder no. ${s.patient_number} · made ${s.created_at} · completed ${s.completed_at || "-"} · capture ${s.capture_type}`,
+      `Enhanced: ${s.enhanced_at || "no"} · photos ${s.keep_photos ? "kept (KEEP PHOTOS)" : s.photos_gone_at ? "REMOVED by the photo rule on " + s.photos_gone_at : "on the server"}`,
+      photos === 0 ? "NOTE: no photos are on the server for this scan (removed by the photo rule, or never sent): it can't be rebuilt from photos; the 3D model files are included." : `Photos included: ${photos}.`,
+      `Files: ${files.length} on the server, ${done} in this zip, ${bad} problem(s). Each was checked against its SHA-256 fingerprint.`, "", ...rows, ""].join("\n");
+    yield { name: "README.txt", input: readme, lastModified: new Date() };
+  }
+  state("Starting…");
+  await makeZip(entries()).pipeTo(out);
+  state(bad ? `Saved ${zipName}, but ${bad} file(s) had a problem: see README.txt inside.` : `Saved ${zipName}: ${done} files (${bytes(sum)}), every file checked.`);
+  note(bad ? `Saved, with ${bad} problem(s): see README.txt in the zip.` : `Saved ${zipName}.`, bad ? "err" : "ok");
 }
 async function settings() {
   const o = await rpc("admin_overview"); const s = o.settings;
