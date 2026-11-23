@@ -151,7 +151,7 @@ $("code-go").onclick = async () => {
 $("signout").onclick = async () => { await sb.auth.signOut(); start("Signed out."); };
 
 // ---------- the page ----------
-const TABS = [["home", "Home"], ["accounts", "Accounts"], ["practices", "Practices & scans"], ["settings", "Settings"], ["log", "Action log"]];
+const TABS = [["home", "Home"], ["accounts", "Accounts"], ["practices", "Practices & scans"], ["stuck", "Stuck scans"], ["settings", "Settings"], ["log", "Action log"]];
 function openApp() {
   hideAll(); show("top"); show("app");
   $("tabs").innerHTML = TABS.map(([k, t]) => `<button data-t="${k}">${t}</button>`).join(" ");
@@ -160,7 +160,7 @@ function openApp() {
 }
 async function go(tab) {
   $("tabs").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.t === tab)); note("");
-  try { await ({ home, accounts, practices, settings, log })[tab](); } catch (e) { note(e.message); }
+  try { await ({ home, accounts, practices, stuck, settings, log })[tab](); } catch (e) { note(e.message); }
 }
 async function home() {
   const o = await rpc("admin_overview");
@@ -180,6 +180,28 @@ async function home() {
       <tr><td>files waiting to be removed</td><td>${esc(o.health.cleanup_queue_waiting)}</td></tr></table></div>
     <div class="card"><h3>App versions in use</h3>${Object.entries(o.app_builds).map(([b, n]) => `build ${esc(b)}: ${esc(n)}`).join(" · ") || "—"}</div>`;
 }
+// ADMIN2d: one account at a glance, read only (each opening is logged).
+async function accountView(id) {
+  const v = await rpc("admin_account_view", { p_account: id }); const a = v.account;
+  const yes = x => x ? "yes" : "no";
+  const rows = (list, head, cells, none) => list.length ? `<table><tr>${head.map(h => `<th>${h}</th>`).join("")}</tr>${list.map(x => `<tr>${cells(x).map(c => `<td>${c}</td>`).join("")}</tr>`).join("")}</table>` : `<p><small>${none}</small></p>`;
+  $("acc-out").innerHTML = `<div class="card"><h3>${esc(a.name)} <small>· ${esc(a.type)}</small></h3>
+    <table>
+      <tr><td>Username</td><td>${esc(a.username || "—")}</td></tr><tr><td>State</td><td>${esc(a.status)}${a.deletion_requested_at ? ` · closing since ${when(a.deletion_requested_at)}` : ""}${a.internal ? " · internal tools" : ""}</td></tr>
+      <tr><td>Made</td><td>${when(a.created_at)}</td></tr><tr><td>Last sign-in</td><td>${a.last_sign_in_at ? when(a.last_sign_in_at) : "never"}</td></tr>
+      <tr><td>Must choose a password</td><td>${yes(a.must_choose_password)}</td></tr><tr><td>Recovery email</td><td>${esc(a.recovery_email || "none")}</td></tr>
+      <tr><td>Scans sent · support logs · open folders</td><td>${esc(v.counts.scans_sent)} · ${esc(v.counts.support_logs)} · ${esc(v.counts.folders)}</td></tr>
+    </table>
+    <h4>Practices</h4>${rows(v.practices, ["Practice", "Role", "Since"], x => [esc(x.practice), esc(x.role), when(x.since)], "None.")}
+    ${v.team ? `<h4>Team place</h4><table><tr><td>Practice</td><td>${esc(v.team.practice)}</td></tr><tr><td>Powers</td><td>calendar ${yes(v.team.calendar)} · invites ${yes(v.team.invites)} · delete ${yes(v.team.delete)}</td></tr>
+      <tr><td>Added</td><td>${when(v.team.added_at)}</td></tr><tr><td>Removed</td><td>${v.team.removed_at ? when(v.team.removed_at) : "no"}</td></tr>
+      <tr><td>Last active</td><td>${v.team.last_active_at ? when(v.team.last_active_at) : "—"}${v.team.last_action ? ` · ${esc(v.team.last_action)}` : ""}</td></tr></table>` : ""}
+    ${a.type === "patient" ? `<h4>Links to practices</h4>${rows(v.connections, ["Practice", "Folder no.", "State", "Since", "Ended", "Minor"], x => [esc(x.practice), esc(x.patient_number), esc(x.status), when(x.since), x.ended_at ? when(x.ended_at) : "—", yes(x.minor)], "None.")}` : ""}
+    <h4>Devices</h4>${rows(v.devices, ["Model", "App build", "Notifications", "Last seen"], x => [esc(x.model), esc(x.app_build), x.push ? "on" : "off", when(x.last_seen_at)], "None.")}
+    <h4>Recent actions</h4>${rows(v.recent, ["Time", "Action", "On"], x => [when(x.at), esc(x.action), esc(x.target_type || "")], "None.")}
+  </div>`;
+  $("acc-out").scrollIntoView({ behavior: "smooth" });
+}
 async function accounts() {
   const rows = await rpc("admin_list_accounts");
   $("app").innerHTML = `
@@ -188,7 +210,7 @@ async function accounts() {
       <button id="ns-go">Make</button></div><div id="ns-out"></div></div>
     <div class="card"><h3>Accounts</h3><table><tr><th>Name</th><th>Type</th><th>Username</th><th>Practice</th><th>State</th><th></th></tr>
     ${rows.map(a => `<tr><td>${esc(a.display_name)}${a.internal ? " <small>(internal tools)</small>" : ""}</td><td>${esc(a.type)}</td><td>${esc(a.username)}</td><td>${esc(a.practice_name)}</td>
-      <td>${esc(a.status)}${a.deletion_requested_at ? " · closing" : ""}</td><td class="row">${a.type === "admin" ? "" : `
+      <td>${esc(a.status)}${a.deletion_requested_at ? " · closing" : ""}</td><td class="row"><button data-a="view" data-id="${a.account_id}">View</button>${a.type === "admin" ? "" : `
         <button data-a="status" data-id="${a.account_id}" data-v="${a.status === "active" ? "off" : "active"}">${a.status === "active" ? "Switch off" : "Switch on"}</button>
         <button data-a="reset" data-id="${a.account_id}">Reset password</button>
         ${a.type === "surgeon" ? `<button data-a="internal" data-id="${a.account_id}" data-v="${!a.internal}">${a.internal ? "Internal off" : "Internal on"}</button>` : ""}
@@ -202,6 +224,7 @@ async function accounts() {
   $("app").querySelectorAll("button[data-a]").forEach(b => b.onclick = async () => {
     const id = b.dataset.id;
     try {
+      if (b.dataset.a === "view") return accountView(id);
       if (b.dataset.a === "status") { await rpc("admin_set_account_status", { p_account: id, p_status: b.dataset.v }); }
       if (b.dataset.a === "internal") { await rpc("admin_set_internal", { p_account: id, p_internal: b.dataset.v === "true" }); }
       if (b.dataset.a === "undelete") { await rpc("admin_cancel_deletion", { p_account: id }); }
@@ -214,19 +237,38 @@ async function accounts() {
 }
 async function practices() {
   const ps = await rpc("admin_list_practices");
-  $("app").innerHTML = `<div class="card"><h3>Practices</h3><table><tr><th>Practice</th><th>Surgeons</th><th>Scans</th><th>Storage</th><th>Training consent</th><th></th></tr>
+  $("app").innerHTML = `<div class="card"><h3>Practices <button id="patLogs">Patient logs</button></h3><table><tr><th>Practice</th><th>Surgeons</th><th>Scans</th><th>Storage</th><th>Training consent</th><th></th></tr>
     ${ps.map(p => `<tr><td>${esc(p.name)}${p.delete_after ? " <small>(closing)</small>" : ""}</td><td>${esc(p.surgeon_count)}</td><td>${esc(p.scan_count)}</td>
       <td>${bytes(p.storage_used_bytes)} of ${bytes(p.storage_limit_bytes)} <button data-a="limit" data-id="${p.practice_id}">Set limit</button></td>
       <td><button data-a="tc" data-id="${p.practice_id}" data-v="${!p.training_consent}">${p.training_consent ? "On · switch off" : "Off · switch on"}</button></td>
       <td class="row"><button data-a="open" data-id="${p.practice_id}" data-name="${esc(p.name)}">Folders</button>
-        <button data-a="logs" data-id="${p.practice_id}" data-name="${esc(p.name)}">Support logs</button></td></tr>`).join("")}</table></div><div id="drill"></div>`;
+        <button data-a="logs" data-id="${p.practice_id}" data-name="${esc(p.name)}">Support logs</button>
+        <button data-a="deleted" data-id="${p.practice_id}" data-name="${esc(p.name)}">Deleted</button></td></tr>`).join("")}</table></div><div id="drill"></div>`;
+  $("patLogs").onclick = () => patientLogs().catch(e => note(e.message));
   $("app").querySelectorAll("button[data-a]").forEach(b => b.onclick = async () => {
     try {
       if (b.dataset.a === "limit") { const gb = prompt("New storage limit in GB:"); if (!gb) return; await rpc("admin_set_storage_limit", { p_practice: b.dataset.id, p_bytes: Math.round(Number(gb) * 1073741824) }); return practices(); }
       if (b.dataset.a === "tc") { await rpc("admin_set_training_consent", { p_practice: b.dataset.id, p_on: b.dataset.v === "true" }); return practices(); }
       if (b.dataset.a === "open") return folders(b.dataset.id, b.dataset.name);
       if (b.dataset.a === "logs") return supportLogs(b.dataset.id, b.dataset.name);
+      if (b.dataset.a === "deleted") return deletedItems(b.dataset.id, b.dataset.name);
     } catch (e) { note(e.message); }
+  });
+}
+// ADMIN2b: a practice's deleted folders and scans still inside the 30-day hold; Restore brings one back (the iPad hears it).
+async function deletedItems(practice, name) {
+  const ds = await rpc("admin_deleted_items", { p_practice: practice });
+  $("drill").innerHTML = `<div class="card"><h3>${esc(name)}: deleted (last 30 days)</h3>
+    <p><small>Folders and scans deleted in the last 30 days. After 30 days they are gone for good. Restore brings one back to the surgeon's iPad. A scan inside a deleted folder comes back with its folder.</small></p>
+    ${ds.length ? `<table><tr><th>Deleted</th><th>No.</th><th>Folder</th><th>What</th><th>By</th><th>Days left</th><th></th></tr>
+    ${ds.map(d => `<tr><td>${when(d.deleted_at)}</td><td>${esc(d.patient_number)}</td><td>${esc(d.folder_name)}</td><td>${esc(d.what)}</td>
+      <td>${esc(d.deleted_by_name || "the surgeon")}</td><td>${esc(d.days_left)}</td>
+      <td>${d.item_type === "scan" && d.folder_deleted ? "<small>restore the folder</small>" : `<button data-t="${d.item_type}" data-id="${d.item_id}">Restore</button>`}</td></tr>`).join("")}</table>` : "<p>Nothing deleted in the last 30 days.</p>"}</div>`;
+  const words = { too_late: "Too late: it is already gone for good.", folder_deleted: "Restore its folder first.", not_allowed: "Can't restore: the iPad has a newer item with the same id." };
+  $("drill").querySelectorAll("button[data-t]").forEach(b => b.onclick = async () => {
+    if (!confirm(`Restore this ${b.dataset.t}? It comes back on the surgeon's iPad.`)) return;
+    try { await rpc("admin_restore_item", { p_type: b.dataset.t, p_id: b.dataset.id }); note("Restored."); deletedItems(practice, name); }
+    catch (e) { note(words[e.message] || ("Not restored: " + e.message)); }
   });
 }
 async function folders(practice, name) {
@@ -237,13 +279,26 @@ async function folders(practice, name) {
   $("drill").querySelectorAll("button[data-f]").forEach(b => b.onclick = () => scans(b.dataset.f, b.dataset.name).catch(e => note(e.message)));
 }
 // Logs the app sent to support from this practice. Each opening is logged; a log deletes itself 30 days after it arrived.
+// TEAMLOGS1: logs patients sent from the app. A patient may be linked to several practices or none, so these are filed under
+// no practice. Admin only; each opening is logged; a log deletes itself 30 days after it arrived.
+async function patientLogs() {
+  const ls = await rpc("admin_list_patient_logs");
+  $("drill").innerHTML = `<div class="card"><h3>Patient logs</h3>
+    <p><small>Logs patients sent from the app (cleaned by the app). Not filed under any practice. Each one deletes itself 30 days after it arrived.</small></p>
+    ${ls.length ? `<table><tr><th>Arrived</th><th>From</th><th>Account</th><th>Practice</th><th>App</th><th>Device</th><th>Note</th><th>Size</th><th>Deletes</th><th></th></tr>
+    ${ls.map(l => `<tr><td>${when(l.arrived_at)}</td><td>${esc(l.sender_name || "—")}${l.sender_username ? ` <small>(${esc(l.sender_username)})</small>` : ""}</td>
+      <td>Patient</td><td>—</td><td>build ${esc(l.app_build)}${l.app_version ? " · " + esc(l.app_version) : ""}</td><td>${esc(l.device_model)}${l.os ? `<br><small>${esc(l.os)}</small>` : ""}</td>
+      <td>${esc(l.note || "")}</td><td>${bytes(l.uncompressed_bytes)}</td><td>${when(l.deletes_after)}</td>
+      <td><button data-log="${l.log_id}" data-file="${esc(l.file_name)}">Save</button></td></tr>`).join("")}</table>` : "<p>No patient logs.</p>"}</div>`;
+  $("drill").querySelectorAll("button[data-log]").forEach(b => b.onclick = () => saveLog(b.dataset.log, b.dataset.file).catch(e => note("Not saved: " + e.message)));
+}
 async function supportLogs(practice, name) {
   const ls = await rpc("admin_list_support_logs", { p_practice: practice });
   $("drill").innerHTML = `<div class="card"><h3>${esc(name)}: support logs</h3>
-    <p><small>Logs a surgeon sent from the app (already cleaned of patient names and codes). Each one deletes itself 30 days after it arrived. Save gives you the plain text file.</small></p>
-    ${ls.length ? `<table><tr><th>Arrived</th><th>From</th><th>App</th><th>Device</th><th>Note</th><th>Size</th><th>Deletes</th><th></th></tr>
+    <p><small>Logs a surgeon or team member sent from the app (already cleaned of patient names and codes). Each one deletes itself 30 days after it arrived. Save gives you the plain text file.</small></p>
+    ${ls.length ? `<table><tr><th>Arrived</th><th>From</th><th>Account</th><th>Practice</th><th>App</th><th>Device</th><th>Note</th><th>Size</th><th>Deletes</th><th></th></tr>
     ${ls.map(l => `<tr><td>${when(l.arrived_at)}</td><td>${esc(l.sender_name || "—")}${l.sender_username ? ` <small>(${esc(l.sender_username)})</small>` : ""}</td>
-      <td>build ${esc(l.app_build)}${l.app_version ? " · " + esc(l.app_version) : ""}</td><td>${esc(l.device_model)}${l.os ? `<br><small>${esc(l.os)}</small>` : ""}</td>
+      <td>${({ surgeon: "Surgeon", team: "Team member", patient: "Patient" })[l.sender_type] || "Surgeon"}</td><td>${esc(l.practice_name || name)}</td><td>build ${esc(l.app_build)}${l.app_version ? " · " + esc(l.app_version) : ""}</td><td>${esc(l.device_model)}${l.os ? `<br><small>${esc(l.os)}</small>` : ""}</td>
       <td>${esc(l.note || "")}</td><td>${bytes(l.uncompressed_bytes)}</td><td>${when(l.deletes_after)}</td>
       <td><button data-log="${l.log_id}" data-file="${esc(l.file_name)}">Save</button></td></tr>`).join("")}</table>` : "<p>No logs from this practice.</p>"}</div>`;
   $("drill").querySelectorAll("button[data-log]").forEach(b => b.onclick = () => saveLog(b.dataset.log, b.dataset.file).catch(e => note("Not saved: " + e.message)));
@@ -278,7 +333,40 @@ async function openScan(id) {
     <p>Made ${when(o.scan.created_at)} · delivered ${when(o.scan.delivered_at)} · enhanced ${when(o.scan.enhanced_at)} · ${bytes(o.scan.total_bytes)} · ${esc(o.scan.capture_type)}</p>
     <table><tr><th>File</th><th>Kind</th><th>Size</th><th></th></tr>${o.files.map(f => `<tr><td>${esc(f.name)}</td><td>${esc(f.kind)}</td><td>${bytes(f.size_bytes)}</td>
       <td>${links[f.file_id] ? `<a href="${esc(withName(links[f.file_id], f.name))}" rel="noopener">${f.kind === "model" || f.kind === "enhanced_model" ? "Download the 3D model" : "Save"}</a>` : (f.uploaded ? "" : "<small>not on the server</small>")}</td></tr>`).join("")}</table>
-    <p><small>Files save to your Downloads folder under their real names (frame_0001.heic …); open them with Preview.</small></p></div>`;  $("zipScan").onclick = () => downloadScan(id).catch(e => { $("zipState").textContent = "Stopped: " + e.message; note(e.message); });
+    <p><small>Files save to your Downloads folder under their real names (frame_0001.heic …); open them with Preview.</small></p>
+    ${o.scan.status === "complete" ? `<h4>Copy / move this scan</h4><div class="row"><select id="cpPrac"></select><select id="cpFold"></select>
+      <label><input type="checkbox" id="cpMove"> Move (the original is deleted; 30 days to undo)</label><button id="cpGo">Copy</button></div>
+      <p><small>Into another practice: always a new folder there, with no patient link. Inside this practice: pick a folder, or a new one. The copy arrives on the surgeon's iPad like a team scan ("PHAI support"). Photos, cover and 3D models are copied; work files, dots and plans are not.</small></p>` : ""}</div>`;
+  if (o.scan.status === "complete") copyMoveSetup(id, o.scan.practice_id).catch(e => note(e.message));
+  $("zipScan").onclick = () => downloadScan(id).catch(e => { $("zipState").textContent = "Stopped: " + e.message; note(e.message); });
+}
+// ADMIN2c: copy (any practice) or move (inside the same practice) one complete scan, through the admin-scan-copy function.
+async function copyMoveSetup(id, home) {
+  const ps = await rpc("admin_list_practices");
+  $("cpPrac").innerHTML = ps.filter(p => !p.delete_after).map(p => `<option value="${p.practice_id}"${p.practice_id === home ? " selected" : ""}>${esc(p.name)}${p.practice_id === home ? " (this practice)" : ""}</option>`).join("");
+  const sync = async () => {
+    const same = $("cpPrac").value === home;
+    $("cpMove").disabled = !same; if (!same) $("cpMove").checked = false;
+    if (same) { const fs = await rpc("admin_list_folders", { p_practice: home });
+      $("cpFold").innerHTML = `<option value="">a new folder</option>` + fs.filter(f => !f.deleted_at).map(f => `<option value="${f.folder_id}">${esc(f.patient_number)} · ${esc(f.name)}</option>`).join(""); }
+    else $("cpFold").innerHTML = `<option value="">a new folder</option>`;
+    $("cpFold").disabled = !same; $("cpGo").textContent = $("cpMove").checked ? "Move" : "Copy";
+  };
+  $("cpPrac").onchange = () => sync().catch(e => note(e.message));
+  $("cpMove").onchange = () => { $("cpGo").textContent = $("cpMove").checked ? "Move" : "Copy"; };
+  await sync();
+  const words = { other_practice_new_folder: "Into another practice it can only be copied, into a new folder.", same_folder: "It is already in that folder.",
+    storage_full: "The target practice has no storage room for it.", no_files: "This scan has no files on the server to copy.", copy_failed: "The copy failed; nothing was changed.",
+    not_found: "The scan is gone or not complete.", no_practice: "That practice is closing or gone.", no_folder: "That folder is gone." };
+  $("cpGo").onclick = async () => {
+    const move = $("cpMove").checked, to = $("cpPrac").selectedOptions[0]?.text || "";
+    if (!confirm(`${move ? "Move" : "Copy"} this scan to ${to}, ${$("cpFold").selectedOptions[0]?.text || "a new folder"}?${move ? " The original is deleted (30 days to undo)." : ""}`)) return;
+    $("cpGo").disabled = true;
+    try { await edge("admin-scan-copy", { scan_id: id, to_practice: $("cpPrac").value, to_folder: $("cpFold").value || null, move });
+      note(move ? "Moved. It arrives on the iPad as a new scan." : "Copied. It arrives on the iPad as a new scan.", "ok"); }
+    catch (e) { note(words[e.message] || ("Not done: " + e.message)); }
+    finally { $("cpGo").disabled = false; }
+  };
 }
 // SCANZIP1: the whole scan as ONE zip, written straight to disk while it downloads (Chrome/Edge "Save as"), so a large scan never
 // sits in memory. Each file is checked against its SHA-256 fingerprint; a README.txt in the zip lists every file and the result.
@@ -326,6 +414,29 @@ async function downloadScan(id) {
   await makeZip(entries()).pipeTo(out);
   state(bad ? `Saved ${zipName}, but ${bad} file(s) had a problem: see README.txt inside.` : `Saved ${zipName}: ${done} files (${bytes(sum)}), every file checked.`);
   note(bad ? `Saved, with ${bad} problem(s): see README.txt in the zip.` : `Saved ${zipName}.`, bad ? "err" : "ok");
+}
+// ADMIN2a: scans that never reached the surgeon, across practices. Re-deliver (a complete scan: its "new scan" notification goes
+// out again) and Give up (an upload that never finished). Every action asks first and is written to the action log.
+async function stuck(hours) {
+  hours = Number(hours ?? ($("stuckHours")?.value || 24));
+  const rows = await rpc("admin_stuck_scans", { p_hours: hours });
+  const src = s => ({ patient_iphone: "patient's iPhone", team_iphone: "team phone" + (s.scanned_by_name ? " (" + s.scanned_by_name + ")" : ""), clinic: "clinic" })[s.source] || s.source;
+  $("app").innerHTML = `<div class="card"><h3>Stuck scans</h3>
+    <p>Older than <input id="stuckHours" value="${esc(hours)}" size="4"> hours <button id="stuckGo">Show</button>
+      <small>Undelivered = complete on the server, not yet on the surgeon's iPad. Unfinished = the phone never finished sending.</small></p>
+    ${rows.length ? `<table><tr><th>Practice</th><th>Folder</th><th>From</th><th>Case</th><th>Age</th><th>Files</th><th>Size</th><th></th></tr>
+    ${rows.map(r => `<tr><td>${esc(r.practice_name)}</td><td>${esc(r.patient_number)} · ${esc(r.folder_name)}</td><td>${esc(src(r))}</td>
+      <td>${r.case_kind === "undelivered" ? "undelivered" : "unfinished"}</td><td>${esc(r.hours_old)} h</td>
+      <td>${esc(r.files_uploaded)} / ${esc(r.files_declared)}</td><td>${bytes(r.total_bytes)}</td>
+      <td>${r.case_kind === "undelivered" ? `<button data-re="${r.scan_id}">Re-deliver</button>` : `<button data-gu="${r.scan_id}">Give up…</button>`}</td></tr>`).join("")}</table>`
+      : "<p>Nothing stuck.</p>"}</div>`;
+  $("stuckGo").onclick = () => stuck($("stuckHours").value).catch(e => note(e.message));
+  $("app").querySelectorAll("button[data-re]").forEach(b => b.onclick = async () => {
+    if (!confirm("Send this scan's 'new scan' notification to the surgeon's iPad again? It stays in their arrivals until the iPad has it.")) return;
+    try { await rpc("admin_redeliver_scan", { p_scan: b.dataset.re }); note("Re-delivered: the notification goes out again.", "ok"); } catch (e) { note(e.message); } });
+  $("app").querySelectorAll("button[data-gu]").forEach(b => b.onclick = async () => {
+    if (!confirm("Give up this unfinished upload? Its files are removed and the sender must send the scan again. This can't be undone.")) return;
+    try { await rpc("admin_give_up_scan", { p_scan: b.dataset.gu }); note("Given up.", "ok"); stuck(hours); } catch (e) { note(e.message); } });
 }
 async function settings() {
   const o = await rpc("admin_overview"); const s = o.settings;
